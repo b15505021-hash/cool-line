@@ -13,6 +13,9 @@ const CONFIG = {
   LINE_CHANNEL_ACCESS_TOKEN: '請填入您的_LINE_CHANNEL_ACCESS_TOKEN',
   LINE_USER_ID: '請填入您的_LINE_USER_ID',
   GEMINI_API_KEY: '請填入您的_GEMINI_API_KEY',
+  // 選填：用來從 LINE 一鍵觸發 GitHub Actions 立即登入 COOL 爬蟲
+  GITHUB_REPO: '請填入您的_GITHUB_REPO', // 格式：帳號/cool-line
+  GITHUB_TOKEN: '請填入您的_GITHUB_PAT', // GitHub Fine-grained PAT (Actions: Read and write)
   // 選填：僅在未使用 GitHub Actions 時作為備援行事曆來源
   COOL_ICS_URL: '',
   GMAIL_LABEL_NAME: 'COOL-已通知',
@@ -365,6 +368,14 @@ function handleTextMessage_(event) {
     return;
   }
 
+  if (['爬蟲', '立即爬', '立即更新', '爬cool', '爬 cool'].some((kw) => lower.includes(kw))) {
+    const res = triggerGithubCoolCrawler_();
+    replyRaw_(event.replyToken, [
+      { type: 'text', text: res.message, quickReply: buildQuickReplyBar_() },
+    ]);
+    return;
+  }
+
   if (lower === '同步' || lower === 'sync') {
     if (hasRecentCanvasSync_()) {
       checkCoolUpdates();
@@ -550,12 +561,50 @@ function buildQuickReplyBar_() {
   return {
     items: [
       { type: 'action', action: { type: 'message', label: '📋 滑動總覽', text: '清單' } },
+      { type: 'action', action: { type: 'message', label: '🚀 立即爬 COOL', text: '立即爬' } },
       { type: 'action', action: { type: 'message', label: '📅 本月日曆', text: '日曆' } },
       { type: 'action', action: { type: 'message', label: '📝 只看作業', text: '作業' } },
       { type: 'action', action: { type: 'message', label: '⚡ 只看考試', text: '考試' } },
-      { type: 'action', action: { type: 'message', label: '➕ 新增待辦', text: '新增' } },
     ],
   };
+}
+
+function triggerGithubCoolCrawler_() {
+  const repo = getSecret_('GITHUB_REPO');
+  const ghToken = getSecret_('GITHUB_TOKEN');
+  if (!repo || !ghToken) {
+    return {
+      ok: false,
+      message: '⚠️ 尚未設定 GITHUB_REPO 或 GITHUB_TOKEN，無法從 LINE 遠端觸發雲端爬蟲。',
+    };
+  }
+  const url = `https://api.github.com/repos/${repo}/actions/workflows/daily_cool.yml/dispatches`;
+  try {
+    const res = UrlFetchApp.fetch(url, {
+      method: 'post',
+      contentType: 'application/json',
+      headers: {
+        Authorization: `Bearer ${ghToken}`,
+        Accept: 'application/vnd.github+json',
+        'X-GitHub-Api-Version': '2022-11-28',
+      },
+      payload: JSON.stringify({ ref: 'main' }),
+      muteHttpExceptions: true,
+    });
+    const code = res.getResponseCode();
+    if (code === 204) {
+      return {
+        ok: true,
+        message: '🚀 已啟動雲端爬蟲登入 NTU COOL！\n約 45～60 秒後會自動更新您的未繳交清單並通知您，屆時點「📋 滑動總覽」即可看到最新狀態！',
+      };
+    }
+    return {
+      ok: false,
+      message: `⚠️ 觸發 GitHub 爬蟲失敗（HTTP ${code}），請檢查 GITHUB_TOKEN 權限（需開啟 Actions: Read and write）。`,
+    };
+  } catch (err) {
+    return { ok: false, message: `⚠️ 觸發失敗：${String(err).slice(0, 100)}` };
+  }
 }
 
 function buildDashboardCarousel_(tasks, firstTab) {

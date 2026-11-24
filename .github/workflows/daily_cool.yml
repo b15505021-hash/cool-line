@@ -35,4 +35,5 @@ jobs:
           LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
           LINE_USER_ID: ${{ secrets.LINE_USER_ID }}
           GAS_WEBHOOK_URL: ${{ secrets.GAS_WEBHOOK_URL }}
+          TRIGGER_EVENT: ${{ github.event_name }}
         run: python cloud_sync.py

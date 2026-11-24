@@ -211,6 +211,16 @@ def main() -> int:
                 for t in due_today
             ]
             line_service.push_alert(alerts, custom_header=header)
+        elif (
+            os.getenv("TRIGGER_EVENT") == "workflow_dispatch"
+            and config.LINE_CHANNEL_ACCESS_TOKEN
+            and config.LINE_USER_ID
+        ):
+            line_service.push_warning(
+                f"✅ NTU COOL 雲端爬蟲更新完成！\n"
+                f"目前共 {len(tasks)} 項未繳交作業／測驗（今日無截止項目）。\n"
+                "點下方「📋 滑動總覽」即可查看最新清單！"
+            )
 
         return 0
     except Exception as exc:
