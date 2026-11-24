@@ -1,0 +1,38 @@
+name: COOL-LINE 每日雲端登入同步
+
+on:
+  schedule:
+    # 每天早上 07:55 (台北時間 UTC+8) 自動登入更新＋早報，對應 UTC 23:55
+    - cron: '55 23 * * *'
+    # 每天晚上 23:00 (台北時間 UTC+8) 自動登入檢查最後 1 小時未繳交作業，對應 UTC 15:00
+    - cron: '0 15 * * *'
+  workflow_dispatch: # 支援手動一鍵觸發測試
+
+jobs:
+  sync-cool:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 下載專案程式碼
+        uses: actions/checkout@v4
+
+      - name: 設定 Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: 安裝 Python 相依套件
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: 安裝 Playwright Chromium 無頭瀏覽器
+        run: playwright install chromium --with-deps
+
+      - name: 執行 NTU COOL 自動登入與未繳交同步
+        env:
+          NTU_STUDENT_ID: ${{ secrets.NTU_STUDENT_ID }}
+          NTU_PASSWORD: ${{ secrets.NTU_PASSWORD }}
+          LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
+          LINE_USER_ID: ${{ secrets.LINE_USER_ID }}
+          GAS_WEBHOOK_URL: ${{ secrets.GAS_WEBHOOK_URL }}
+        run: python cloud_sync.py

@@ -1,0 +1,8 @@
+requests
+flask
+line-bot-sdk
+beautifulsoup4
+google-genai
+apscheduler
+python-dotenv
+playwright
