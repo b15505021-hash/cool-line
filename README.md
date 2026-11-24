@@ -21,6 +21,9 @@
 
 ```text
 COOL-LINE/
+├── COOL-LINE_一鍵安裝精靈.html  # ✨ 分享專用單一檔案互動精靈（雙擊開啟，免程式背景一鍵自架）
+├── build_wizard.py            # 建置安裝精靈並執行零洩密自動檢查
+├── vendor/                    # 本機離線純 JS Curve25519 SealedBox 加密套件
 ├── .github/workflows/
 │   └── daily_cool.yml   # GitHub Actions 排程（每日 07:55 與 23:00 自動登入同步）
 ├── gas/
@@ -39,7 +42,16 @@ COOL-LINE/
 
 ---
 
-## 🚀 5 分鐘開源自架教學（給其他台大同學 Fork 使用）
+## ✨ 新手零門檻推薦：一鍵分享安裝精靈（免寫程式・不燒原作者額度）
+
+想把 COOL-LINE 分享給其他台大同學？直接將專案內的 **[`COOL-LINE_一鍵安裝精靈.html`](./COOL-LINE_一鍵安裝精靈.html)** 傳給對方雙擊開啟（支援 Windows / Mac 瀏覽器，完全無須安裝 Python）：
+- 逐步引導申請 **對方自己的** LINE 機器人與選填 Gemini 金鑰。
+- **一鍵自動填入全部金鑰** 產生專屬 `Code.gs`，引導貼至 Google Apps Script 並設定 LINE Webhook。
+- 在瀏覽器本機端以 **Libsodium SealedBox 端對端加密**，一鍵全自動在對方 GitHub 帳號建立私人倉庫、寫入 5 組 Secrets 並觸發首次 NTU COOL 自動爬蟲測試！
+
+---
+
+## 🚀 5 分鐘開源自架教學（手動步驟版）
 
 ### 步驟 1：建立 LINE 官方帳號
 1. 前往 [LINE Official Account Manager](https://manager.line.biz/) 建立帳號，於「設定 → Messaging API」啟用 Messaging API，並於「回應設定」**關閉自動回應訊息、開啟 Webhook**。
