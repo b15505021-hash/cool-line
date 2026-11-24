@@ -1,133 +1,80 @@
-# COOL-LINE：台大 NTU COOL 課程動態監控與 LINE 智慧提醒機器人
+# COOL-LINE：台大 NTU COOL 雙雲端智慧死線、行事曆與 LINE 推播助理
 
-**COOL-LINE** 是一個專為台大學生設計的自動化課程監控系統。透過「Canvas REST API 主軌 + Gmail IMAP 副軌」雙軌偵測課堂突襲小考、新作業死線、隱藏上傳檔案與助教公告，結合 **Google Gemini 2.5 Flash** 濃縮重點，並透過 **LINE Messaging API** 合併推播（省額度）與免費互動回覆 Flex 卡片。
-
----
-
-## 目錄
-1. [專案結構](#專案結構)
-2. [系統核心功能](#系統核心功能)
-3. [申請各項 API 金鑰與憑證](#申請各項-api-金鑰與憑證)
-4. [安裝與環境設定](#安裝與環境設定)
-5. [測試與 Demo 展示](#測試與-demo-展示)
-6. [啟動與免費雲端部署建議](#啟動與免費雲端部署建議)
+**COOL-LINE** 是一套開源自架（Self-Hosted）的台大 NTU COOL 個人課程助理。採用 **「GitHub Actions 自動登入同步 ＋ Google Apps Script 即時互動與收信」雙雲端零成本架構**，電腦完全不用開機，即可自動過濾已繳交作業、接收考試緊急警報，並在 LINE 內滑動查看分類待辦與本月日曆。
 
 ---
 
-## 專案結構
+## ✨ 核心特色
+
+- **免開電腦、自動過濾已繳交作業（GitHub Actions）**：
+  - 每天早上 **07:55** 與晚上 **23:00**（死線前最後一小時）自動透過無頭瀏覽器登入台大 SSO，從 Canvas API 精準篩選出 **「尚未截止且尚未繳交（`unsubmitted`）」** 的作業與測驗，交完的作業自動從清單消失。
+- **即時公告濃縮與分級警報（Google Apps Script + Gemini 2.5 Flash）**：
+  - 每 5 分鐘掃描 Gmail 中的 NTU COOL 通知信，自動濃縮為 60 字內重點；偵測到考試關鍵字立即發送滿版 **`❗❗❗` 紅色驚嘆號緊急警報**。
+- **4 頁橫向輪播 LINE 儀表板（完全免費 Reply API）**：
+  - 輸入「清單」一次回傳 **【📋 全部 ｜ 📝 作業 ｜ ⚡ 考試 ｜ 📅 本月日曆】** 4 張並排卡片，左右滑動切換不洗版、不扣每月 200 則推播額度。
+  - **點擊標題直達繳交頁**：自動附加 `?openExternalBrowser=1`，點擊任務標題直接以 Safari／Chrome 開啟該作業頁，避開 LINE 內建瀏覽器限制。
+  - **互動式 Check List ＋ 原生選日期新增**：支援一鍵打勾「完成／復原」及呼叫手機原生滾輪日曆新增個人待辦。
+
+---
+
+## 🗂️ 專案架構
 
 ```text
 COOL-LINE/
-├── app.py               # Flask Webhook 伺服器與 APScheduler 智慧動態排程器
-├── config.py            # 環境變數載入、課表高頻警戒時段（CLASS_SCHEDULE）設定
-├── database.py          # SQLite 本地資料庫（記錄已通知項目與查詢未到期任務）
-├── scraper.py           # 雙軌資料擷取（Canvas REST API + Gmail IMAP 副軌）
-├── ai_summarizer.py     # Gemini 2.5 Flash 公告濃縮（含 100 字純文字降級機制）
-├── line_service.py      # LINE SDK v3 合併 Push 推播與 Flex Message 待辦卡片
-├── auth_helper.py       # Playwright 無頭瀏覽器自動登入台大 SSO 更新 Cookie
-├── test_scraper.py      # 單獨測試 COOL Cookie 連線與列出本學期課程
-├── demo_simulate.py     # 一鍵模擬「突襲小考 + Gemini 公告濃縮」並發送真實 LINE 推播
+├── .github/workflows/
+│   └── daily_cool.yml   # GitHub Actions 排程（每日 07:55 與 23:00 自動登入同步）
+├── gas/
+│   └── Code.gs          # Google Apps Script 程式碼（LINE Webhook 輪播日曆 + 5 分鐘 Gmail 巡檢）
+├── cloud_sync.py        # 雲端同步主程式（過濾已繳交作業、同步至 GAS、發送早晚死線提醒）
+├── auth_helper.py       # Playwright 自動走完台大 ADFS SSO 登入取得 _normandy_session
+├── scraper.py           # Canvas REST API 與 Gmail IMAP 擷取模組
+├── ai_summarizer.py     # Gemini 2.5 Flash 公告濃縮（含純文字降級機制）
+├── line_service.py      # LINE Messaging API v3 推播（含 Quick Reply 快捷鍵與外部瀏覽器連結）
+├── app.py               # （選用備案）Flask 本機課堂 30 秒高頻輪詢伺服器
+├── database.py          # （選用備案）SQLite 本地狀態追蹤
+├── demo_simulate.py     # Demo Day 一鍵模擬突襲小考與 AI 公告濃縮推播腳本
 ├── requirements.txt     # Python 相依套件清單
-├── .env.example         # 環境變數範本
-├── .env                 # 實際機密設定（已被 .gitignore 排除）
-└── .gitignore
+└── .env.example         # 環境變數範本（機密 .env 已由 .gitignore 排除）
 ```
 
 ---
 
-## 系統核心功能
+## 🚀 5 分鐘開源自架教學（給其他台大同學 Fork 使用）
 
-- **課表感知動態輪詢（`APScheduler`）**：
-  - **上課高頻警戒時段**（依 `config.py` 中的 `CLASS_SCHEDULE`）：每 **30 秒** 掃描一次，抓出未寄信通知的課堂突襲小考。
-  - **非上課一般時段**：每 **20 分鐘** 掃描一次，維持連線狀態並節省資源。
-- **雙軌偵測無死角**：
-  - **主軌（Canvas API）**：監控線上測驗（`quizzes`）、作業死線（`assignments`）以及老師只傳檔案不開作業的隱藏任務（`files`）。
-  - **副軌（Gmail IMAP，選用）**：自動讀取來自 `ntu-cool@cool.ntu.edu.tw` 的未讀通知信並去除 HTML 標籤。
-- **節省 LINE 免費推播額度**：
-  - 主動推播（Push API）將同一輪偵測到的多筆新動態**合併成一則訊息**發送。
-  - 傳送「作業」、「考試」、「檢查」或 `check` 至機器人時，改走免費的 **Reply API** 即時回傳 **Flex Message** 視覺化待辦卡片。
-- **Session 自動續命**：遇到 HTTP `401/403`（`SessionExpiredError`）時，自動呼叫 Playwright 登入台大 SSO 更新 `_normandy_session`；若失敗（如遇驗證碼或未設定帳密），會主動發送 LINE 警告通知。
+### 步驟 1：建立 LINE 官方帳號
+1. 前往 [LINE Official Account Manager](https://manager.line.biz/) 建立帳號，於「設定 → Messaging API」啟用 Messaging API，並於「回應設定」**關閉自動回應訊息、開啟 Webhook**。
+2. 前往 [LINE Developers Console](https://developers.line.biz/console/) 取得 **Channel access token** 與 **Your user ID**，並掃描 QR Code 加機器人為好友。
 
----
+### 步驟 2：部署 Google Apps Script（GAS 雲端互動端）
+1. 用綁定 NTU COOL 通知的 Google 帳號開啟 [script.google.com](https://script.google.com/) 建立新專案，貼上 `gas/Code.gs` 全部內容（無須手動在程式碼內填 Token，下一步雲端同步會自動安全寫入雲端屬性；若有申請 [Gemini API Key](https://aistudio.google.com/apikey) 可填入）。
+2. 點右上角 **「部署 → 新增部署作業」**，類型選 **「網頁應用程式」**，「誰可以存取」選 **「所有人」**，複製產生的 `https://script.google.com/macros/s/.../exec` 網址。
+3. 將該網址貼回 LINE Developers Console 的 **Webhook URL** 並開啟 **Use webhook**。
+4. 在 GAS 左側 **「觸發條件（鬧鐘）」** 新增兩條時間驅動排程：
+   - `checkCoolUpdates`：分鐘計時器 → 每 5 分鐘
+   - `sendDailyMorningBriefing`：日計時器 → 上午 8 點到 9 點
 
-## 申請各項 API 金鑰與憑證
-
-### 1. 取得 LINE Messaging API 金鑰與 User ID
-1. 前往 [LINE Developers Console](https://developers.line.biz/console/)，登入後建立一個 Provider，並新增 **Messaging API Channel**。
-2. 在 Channel 的 **Messaging API** 分頁中：
-   - 發行並複製 **Channel access token (long-lived)** -> 填入 `LINE_CHANNEL_ACCESS_TOKEN`。
-   - 捲動到下方找到 **Your user ID**（`U` 開頭的字串）-> 填入 `LINE_USER_ID`。
-   - 建議關閉「自動回應訊息（Auto-reply messages）」以避免干擾機器人回覆。
-3. 在 **Basic settings** 分頁中：
-   - 複製 **Channel secret** -> 填入 `LINE_CHANNEL_SECRET`。
-4. 掃描 QR Code 將你的 LINE 官方帳號加為好友。
-
-### 2. 取得 Google Gemini API Key
-1. 前往 [Google AI Studio](https://aistudio.google.com/apikey)。
-2. 點擊 **Create API key** 建立免費金鑰 -> 填入 `GEMINI_API_KEY`。
-
-### 3. 取得 NTU COOL `_normandy_session` Cookie
-1. 使用 Chrome / Edge 瀏覽器登入 [NTU COOL](https://cool.ntu.edu.tw)。
-2. 按 `F12` 開啟開發者工具 -> 切換至 **Application（應用程式）** 分頁 -> 左側展開 **Cookies** -> 點選 `https://cool.ntu.edu.tw`。
-3. 找到名稱為 `_normandy_session` 的項目，複製其 **Value** -> 填入 `.env` 的 `COOL_SESSION_COOKIE`。
-
-### 4. （選用）設定台大計中帳密自動重登
-- 若希望 Cookie 過期時自動更新，可在 `.env` 填入 `NTU_STUDENT_ID` 與 `NTU_PASSWORD`（僅存於本機 `.env`，請勿上傳至 GitHub）。
-
-### 5. （選用）設定 Gmail IMAP 應用程式密碼
-1. 若 NTU COOL 通知信寄到 Gmail，先到 Google 帳戶開啟「兩步驟驗證」。
-2. 前往 Google 帳戶安全性設定建立 **應用程式密碼（App Password）**（16 碼英文字母）。
-3. 將 Gmail 信箱與 16 碼密碼填入 `.env` 的 `GMAIL_ADDRESS` 與 `GMAIL_APP_PASSWORD`（兩者皆填寫才會啟用副軌讀信）。
+### 步驟 3：Fork 本專案並啟用 GitHub Actions 自動登入
+1. Fork 本專案至你個人的 GitHub 帳號。
+2. 進入你專案的 **Settings → Secrets and variables → Actions → New repository secret**，新增以下 5 個加密環境變數：
+   - `NTU_STUDENT_ID`：台大計中帳號（如 `b12345678`）
+   - `NTU_PASSWORD`：台大計中密碼
+   - `LINE_CHANNEL_ACCESS_TOKEN`：步驟 1 取得的 Token
+   - `LINE_USER_ID`：步驟 1 取得的 User ID
+   - `GAS_WEBHOOK_URL`：步驟 2 取得的 GAS 網頁應用程式網址
+3. 點擊上方 **Actions → `COOL-LINE 每日雲端登入同步` → Run workflow** 執行一次測試，看到綠色勾勾 ✅ 即完成！
 
 ---
 
-## 安裝與環境設定
+## 💻 本機開發與 Demo 測試
 
-### 1. 安裝 Python 相依套件
 ```bash
 pip install -r requirements.txt
-```
-
-### 2. 安裝 Playwright 無頭瀏覽器（供自動重登使用）
-```bash
 playwright install chromium
-```
+cp .env.example .env   # 填入對應金鑰後即可測試
 
-### 3. 設定 `.env` 與課表
-1. 打開專案內的 `.env` 檔案，填入上述取得之金鑰與 Cookie。
-2. 打開 `config.py`，依你的實際課表修改 `CLASS_SCHEDULE`：
-   ```python
-   CLASS_SCHEDULE = {
-       "Mon": [("13:20", "15:10")],
-       "Thu": [("13:20", "14:10")],
-   }
-   ```
+# 單獨測試自動登入與同步未繳交清單
+python cloud_sync.py
 
----
-
-## 測試與 Demo 展示
-
-### 1. 測試 NTU COOL 連線與課程列表
-```bash
-python test_scraper.py
-```
-（也可直接帶入參數測試：`python test_scraper.py --cookie "你的_normandy_session"`）
-
-### 2. 期末 Demo Day 一鍵模擬推播
-```bash
+# Demo Day 一鍵模擬突襲小考與 AI 濃縮推播
 python demo_simulate.py
 ```
-執行後會立刻模擬「工程數學突襲小考」與「Gemini 濃縮助教公告」，並合併推播一則真實訊息到你的手機 LINE。接著在 LINE 聊天室傳送「考試」或「作業」，即可展示 Flex Message 卡片回覆！
-
----
-
-## 啟動與免費雲端部署建議
-
-### 本機啟動
-```bash
-python app.py
-```
-預設監聽 `http://0.0.0.0:5000`。若需在本機測試 LINE Webhook，可搭配 `ngrok http 5000` 取得 HTTPS 網址後，填入 LINE Developers Console 的 **Webhook URL**（`https://你的網址/callback`）並開啟 **Use webhook**。
-
-### 雲端防休眠設定
-- 部署至 Render / Railway 等免費方案後，可至 [cron-job.org](https://cron-job.org/) 建立每 10～14 分鐘一次的免費排程任務，定時向 `https://你的網域/ping` 或 `https://你的網域/trigger` 發送 `GET` 請求，防止免費伺服器休眠。

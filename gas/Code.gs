@@ -1,37 +1,63 @@
 /**
- * COOL-LINE v6（絕對不已讀・超穩定順手版）
- * 核心修復與升級：
- * 1. 徹底解決 GAS PropertiesService 9KB 上限爆掉導致的「已讀不回」Bug（自動瘦身標題＋安全字節控管）
- * 2. 加入「絕對不已讀保險」：任何異常或 Flex 失敗都會自動降級回覆純文字，保證 100% 有回應
- * 3. 「清單／作業／考試／日曆」改為極速秒回（< 1 秒），不卡 Gmail 掃描
- * 4. 4 頁橫向滑動輪播（全部 / 作業 / 考試 / 本月日曆），左右滑動切換不洗版
- * 5. 作業自動顯示截止時間 ＋ 考試滿版 ❗❗❗ 紅色驚嘆號緊急通知 ＋ 每天早上 8 點固定早報
+ * COOL-LINE v7（開源雙雲端旗艦版・永久記憶金鑰・零重複零污染）
+ * 核心修復：
+ * 1. 金鑰雲端永久記憶（ScriptProperties）：重貼程式碼忘記填 Token 也不會再「已讀不回」！
+ * 2. 雙雲端防衝突保護：當 GitHub Actions (Canvas API) 啟用時，GAS 不再用 .ics 把已繳交作業塞回清單
+ * 3. 永久保留「完成」勾勾：在 LINE 手動打勾完成的項目，下次雲端同步不會被洗掉
+ * 4. 點擊任一作業／考試標題，直接以手機外部瀏覽器（Safari/Chrome）開啟該作業繳交頁
+ * 5. 防重複早報：若 07:55 GitHub Actions 已發送今日死線警報，08:00 GAS 不會重複推播第二次
  */
 
-// ==================== 請在此填入您的設定 ====================
+// ==================== 設定區（支援雲端自動記憶，貼過一次或跑過 cloud_sync 即永久保存） ====================
 const CONFIG = {
   LINE_CHANNEL_ACCESS_TOKEN: '請填入您的_LINE_CHANNEL_ACCESS_TOKEN',
   LINE_USER_ID: '請填入您的_LINE_USER_ID',
   GEMINI_API_KEY: '請填入您的_GEMINI_API_KEY',
-  // 建議填入：從 NTU COOL「行事曆 -> 行事曆訂閱」複製的 .ics 網址，截止時間最準確
+  // 選填：僅在未使用 GitHub Actions 時作為備援行事曆來源
   COOL_ICS_URL: '',
   GMAIL_LABEL_NAME: 'COOL-已通知',
 };
-// ============================================================
+// ==========================================================================================================
 
 const PROP_NOTIFIED_KEY = 'COOL_NOTIFIED_IDS';
 const PROP_TASKS_KEY = 'COOL_TASKS_LIST';
 const PROP_PENDING_DATE_KEY = 'COOL_PENDING_PICKED_DATE';
+const PROP_LAST_CANVAS_SYNC = 'COOL_LAST_CANVAS_SYNC_MS';
 const MAX_STORED_IDS = 150;
 const MAX_STORED_TASKS = 30;
-const SAFE_PROP_BYTES = 7500; // GAS 單一屬性上限為 9216 bytes，預留安全空間絕不爆掉
+const SAFE_PROP_BYTES = 7500;
 
 /**
- * 排程 1（每 5 分鐘）：背景自動掃描新信與行事曆
+ * 智慧讀取金鑰：若程式碼內有填寫有效值，自動存入雲端屬性；若為預設範本字，自動從雲端屬性讀取！
+ */
+function getSecret_(key) {
+  const props = PropertiesService.getScriptProperties();
+  const propKey = 'CFG_' + key;
+  const codeVal = (CONFIG[key] || '').trim();
+  const isPlaceholder = !codeVal || codeVal.startsWith('請');
+
+  if (!isPlaceholder) {
+    if (props.getProperty(propKey) !== codeVal) {
+      props.setProperty(propKey, codeVal);
+    }
+    return codeVal;
+  }
+  return (props.getProperty(propKey) || '').trim();
+}
+
+function hasRecentCanvasSync_() {
+  const lastMs = Number(PropertiesService.getScriptProperties().getProperty(PROP_LAST_CANVAS_SYNC) || 0);
+  // 36 小時內有跑過 GitHub Actions / cloud_sync.py 即視為雙雲端模式
+  return lastMs > 0 && Date.now() - lastMs < 36 * 3600 * 1000;
+}
+
+/**
+ * 排程 1（每 5 分鐘）：偵測 Gmail 即時新公告／突襲通知並推播
  */
 function checkCoolUpdates() {
   const notifiedIds = loadNotifiedIds_();
   const tasks = loadTasks_();
+  const canvasMode = hasRecentCanvasSync_();
   const alerts = [];
   const pendingGmailThreads = [];
   const newNotifiedIds = [];
@@ -55,7 +81,8 @@ function checkCoolUpdates() {
       const category = classifyCategory_(rawSubject, plainBody);
       const parsedDue = extractDueDateFromText_(rawSubject + ' ' + plainBody);
 
-      if (category === 'exam' || category === 'homework') {
+      // 僅在未使用 Canvas API 同步時，才把信件猜測項目放進清單（避免污染精準清單）
+      if (!canvasMode && (category === 'exam' || category === 'homework')) {
         upsertTask_(tasks, {
           id: uid,
           title: cleanTitle,
@@ -63,6 +90,7 @@ function checkCoolUpdates() {
           dueMs: parsedDue ? parsedDue.dueMs : null,
           dueDisplay: parsedDue ? parsedDue.dueDisplay : '詳見信件',
           done: false,
+          url: 'https://cool.ntu.edu.tw',
         });
       }
 
@@ -82,8 +110,10 @@ function checkCoolUpdates() {
     else thread.addLabel(label);
   }
 
-  if (CONFIG.COOL_ICS_URL && CONFIG.COOL_ICS_URL.startsWith('http')) {
-    const icsEvents = fetchUpcomingFromIcs_(CONFIG.COOL_ICS_URL);
+  // 僅在未使用 Canvas API 同步時，才啟用 .ics 備援（避免把已繳交作業塞回清單）
+  const icsUrl = getSecret_('COOL_ICS_URL');
+  if (!canvasMode && icsUrl && icsUrl.startsWith('http')) {
+    const icsEvents = fetchUpcomingFromIcs_(icsUrl);
     for (const ev of icsEvents) {
       const uid = `ics_${ev.uid}`;
       const category = classifyCategory_(ev.summary, '');
@@ -95,6 +125,7 @@ function checkCoolUpdates() {
         dueMs: ev.dueMs,
         dueDisplay: ev.dueDisplay,
         done: false,
+        url: 'https://cool.ntu.edu.tw',
       });
 
       if (!notifiedIds.has(uid)) {
@@ -110,7 +141,7 @@ function checkCoolUpdates() {
     }
   }
 
-  saveTasks_(tasks);
+  if (!canvasMode) saveTasks_(tasks);
 
   if (alerts.length > 0) {
     const pushOk = pushMergedLineAlert_(alerts);
@@ -125,12 +156,15 @@ function checkCoolUpdates() {
 }
 
 /**
- * 排程 2（每天早上 8 點）：固定推播今天截止的作業與考試
+ * 排程 2（每天早上 8 點）：早安問候與備援提醒（自動避開與 GitHub Actions 重複推播）
  */
 function sendDailyMorningBriefing() {
   const tasks = loadTasks_();
-  syncIcsIntoTasks_(tasks);
-  saveTasks_(tasks);
+  const canvasMode = hasRecentCanvasSync_();
+  if (!canvasMode) {
+    syncIcsIntoTasks_(tasks);
+    saveTasks_(tasks);
+  }
 
   const now = new Date();
   const todayStr = Utilities.formatDate(now, 'Asia/Taipei', 'yyyy-MM-dd');
@@ -141,9 +175,16 @@ function sendDailyMorningBriefing() {
     return Utilities.formatDate(new Date(t.dueMs), 'Asia/Taipei', 'yyyy-MM-dd') === todayStr;
   });
 
+  // 若今日有未繳交任務，且過去 2 小時內 GitHub Actions 剛跑過（已發過精準早報），則不重複推播第二次！
+  const lastSyncMs = Number(PropertiesService.getScriptProperties().getProperty(PROP_LAST_CANVAS_SYNC) || 0);
+  if (dueToday.length > 0 && lastSyncMs > 0 && Date.now() - lastSyncMs < 2 * 3600 * 1000) {
+    Logger.log('GitHub Actions 剛發送過今日死線提醒，略過重複早報。');
+    return;
+  }
+
   let msgText = '';
   if (dueToday.length === 0) {
-    msgText = `☀️ 早安！今天（${todayLabel}）沒有截止的作業或考試，祝你今天順心！`;
+    msgText = `☀️ 早安！今天（${todayLabel}）沒有截止的未繳交作業或考試，祝你今天順心！`;
   } else {
     const hasExam = dueToday.some((t) => t.category === 'exam');
     const header = hasExam
@@ -158,15 +199,16 @@ function sendDailyMorningBriefing() {
   }
 
   pushLineMessages_([{ type: 'text', text: msgText, quickReply: buildQuickReplyBar_() }]);
-  Logger.log('每日早報發送完成，今日截止共 ' + dueToday.length + ' 筆。');
 }
 
-/**
- * 匯入過去 30 天內的 COOL 通知信與行事曆（重設精簡清單，不洗版推播）
- */
 function importPastCoolTasks(fastMode) {
+  if (hasRecentCanvasSync_()) {
+    // 雙雲端模式下，保護 Canvas API 同步的乾淨未繳交清單不被 Gmail 舊信覆蓋
+    checkCoolUpdates();
+    return 0;
+  }
+
   const notifiedIds = loadNotifiedIds_();
-  // 每次同步皆清除舊的未完成 COOL 紀錄重新精準分類，保留使用者手動新增與已完成項目
   let tasks = loadTasks_().filter((t) => t.id.startsWith('man_') || t.done);
 
   const now = new Date();
@@ -194,6 +236,7 @@ function importPastCoolTasks(fastMode) {
           dueMs: parsedDue ? parsedDue.dueMs : null,
           dueDisplay: parsedDue ? parsedDue.dueDisplay : '詳見信件',
           done: false,
+          url: 'https://cool.ntu.edu.tw',
         });
         if (!existed) importedCount++;
       }
@@ -204,13 +247,9 @@ function importPastCoolTasks(fastMode) {
   importedCount += syncIcsIntoTasks_(tasks);
   saveTasks_(tasks);
   saveNotifiedIds_(notifiedIds);
-  Logger.log(`同步完成！目前清單共 ${tasks.length} 筆，本次新增 ${importedCount} 筆。`);
   return importedCount;
 }
 
-/**
- * 測試函式：立刻測試滿版紅色驚嘆號緊急考試通知
- */
 function testLinePush() {
   const ok = pushMergedLineAlert_([
     {
@@ -224,9 +263,6 @@ function testLinePush() {
   Logger.log(ok ? '測試推播成功！' : '測試推播失敗，請檢查執行紀錄。');
 }
 
-/**
- * LINE Webhook 入口（內建「絕對不已讀」終極錯誤捕捉）
- */
 function doPost(e) {
   let lastReplyToken = '';
   try {
@@ -235,16 +271,39 @@ function doPost(e) {
     }
     const payload = JSON.parse(e.postData.contents);
 
-    // 接收來自 GitHub Actions / Python Canvas API 的真實「未繳交清單」同步
-    if (payload.sync_source === 'canvas_api' && payload.sync_secret === CONFIG.LINE_USER_ID) {
-      const manualTasks = loadTasks_().filter((t) => t.id.startsWith('man_'));
-      const incoming = Array.isArray(payload.tasks) ? payload.tasks : [];
-      saveTasks_(incoming.concat(manualTasks));
-      return ContentService.createTextOutput('SYNC_OK');
+    // 接收來自 GitHub Actions / cloud_sync.py 的真實「未繳交清單」與金鑰同步
+    if (payload.sync_source === 'canvas_api' && payload.sync_secret) {
+      const props = PropertiesService.getScriptProperties();
+      const currentUserId = getSecret_('LINE_USER_ID');
+
+      // 驗證身分（首次尚未設定 LINE_USER_ID 時允許自動綁定初始化）
+      if (!currentUserId || currentUserId === payload.sync_secret) {
+        if (!currentUserId) props.setProperty('CFG_LINE_USER_ID', String(payload.sync_secret).trim());
+        if (payload.line_token) props.setProperty('CFG_LINE_CHANNEL_ACCESS_TOKEN', String(payload.line_token).trim());
+        if (payload.gemini_key) props.setProperty('CFG_GEMINI_API_KEY', String(payload.gemini_key).trim());
+        props.setProperty(PROP_LAST_CANVAS_SYNC, String(Date.now()));
+
+        const prevTasks = loadTasks_();
+        const doneIds = new Set(prevTasks.filter((t) => t.done).map((t) => t.id));
+        const manualTasks = prevTasks.filter((t) => t.id.startsWith('man_'));
+
+        const incoming = (Array.isArray(payload.tasks) ? payload.tasks : []).map((t) => ({
+          id: t.id,
+          title: t.title,
+          category: t.category,
+          dueMs: t.dueMs,
+          dueDisplay: t.dueDisplay,
+          done: Boolean(t.done || doneIds.has(t.id)),
+          url: t.url || 'https://cool.ntu.edu.tw',
+        }));
+
+        saveTasks_(incoming.concat(manualTasks));
+        return ContentService.createTextOutput('SYNC_OK');
+      }
+      return ContentService.createTextOutput('FORBIDDEN');
     }
 
     const events = payload.events || [];
-
     for (const event of events) {
       lastReplyToken = event.replyToken || '';
       if (event.type === 'postback' && event.postback && event.postback.data) {
@@ -268,14 +327,11 @@ function doPost(e) {
   return ContentService.createTextOutput('OK');
 }
 
-// ==================== LINE 互動邏輯（秒回設計） ====================
-
 function handleTextMessage_(event) {
   const rawText = (event.message.text || '').trim();
   const lower = rawText.toLowerCase();
   const props = PropertiesService.getScriptProperties();
 
-  // 接續「選日期新增」步驟
   const pendingIso = props.getProperty(PROP_PENDING_DATE_KEY);
   if (
     pendingIso &&
@@ -293,6 +349,7 @@ function handleTextMessage_(event) {
       dueMs: dt.getTime(),
       dueDisplay: dueDisplay,
       done: false,
+      url: 'https://cool.ntu.edu.tw',
     });
     saveTasks_(tasks);
 
@@ -308,8 +365,19 @@ function handleTextMessage_(event) {
     return;
   }
 
-  // 極速同步（只掃最新 10 封＋行事曆，確保 3 秒內秒回；超時自動補發 Push）
   if (lower === '同步' || lower === 'sync') {
+    if (hasRecentCanvasSync_()) {
+      checkCoolUpdates();
+      const tasks = loadTasks_();
+      replyDashboardSafe_(
+        event.replyToken,
+        tasks,
+        'all',
+        '✅ 目前已啟用「NTU COOL 自動登入精準模式」（每天 07:55 與 23:00 自動過濾已繳交作業），並已剛掃描完最新信件：'
+      );
+      return;
+    }
+
     const count = importPastCoolTasks(true);
     const tasks = loadTasks_();
     const ok = replyDashboardSafe_(
@@ -329,7 +397,6 @@ function handleTextMessage_(event) {
     return;
   }
 
-  // 單看本月日曆（秒回）
   if (lower === '日曆' || lower === '月曆' || lower === 'calendar') {
     const tasks = loadTasks_();
     const calFlex = {
@@ -347,7 +414,6 @@ function handleTextMessage_(event) {
     return;
   }
 
-  // 手動文字新增
   if (rawText.startsWith('新增') || rawText.startsWith('+')) {
     const body = rawText.replace(/^(新增|\+)\s*/, '').trim();
     if (!body) {
@@ -373,6 +439,7 @@ function handleTextMessage_(event) {
       dueMs: parsed.dueMs,
       dueDisplay: parsed.dueDisplay,
       done: false,
+      url: 'https://cool.ntu.edu.tw',
     });
     saveTasks_(tasks);
 
@@ -385,7 +452,6 @@ function handleTextMessage_(event) {
     return;
   }
 
-  // 清單／作業／考試（直接讀快取 0.5 秒極速回覆，絕不逾時！）
   if (['清單', '作業', '考試', '行事曆', 'check', 'todo', '全部'].some((kw) => lower.includes(kw))) {
     const tasks = loadTasks_();
     let firstTab = 'all';
@@ -401,8 +467,8 @@ function handleTextMessage_(event) {
       type: 'text',
       text:
         '👋 我是 COOL-LINE 課程助理！直接點下方快捷鍵即可：\n' +
-        '📋 「清單」→ 左右滑動看【全部／作業／考試／日曆】\n' +
-        '🔄 「同步」→ 立刻抓最新信件與行事曆\n' +
+        '📋 「清單」→ 左右滑動看【全部／作業／考試／日曆】（點標題直達 COOL）\n' +
+        '📅 「日曆」→ 單看本月死線月曆\n' +
         '➕ 「新增 11/28 14:00 微積分小考」→ 手動建待辦',
       quickReply: buildQuickReplyBar_(),
     },
@@ -458,9 +524,6 @@ function handlePostback_(event) {
   replyDashboardSafe_(event.replyToken, tasks, 'all', '');
 }
 
-/**
- * 安全回覆儀表板：若 Flex 卡片因故被 LINE 拒絕，自動降級回傳純文字清單，絕不「已讀不回」
- */
 function replyDashboardSafe_(replyToken, tasks, firstTab, prefixText) {
   const carousel = buildDashboardCarousel_(tasks, firstTab);
   carousel.quickReply = buildQuickReplyBar_();
@@ -468,7 +531,6 @@ function replyDashboardSafe_(replyToken, tasks, firstTab, prefixText) {
 
   if (replyRaw_(replyToken, msgs)) return true;
 
-  // 降級為純文字清單（100% 不會被 Flex 規則拒絕）
   const fallbackText = (prefixText ? prefixText + '\n\n' : '') + buildPlainTextSummary_(tasks);
   return replyRaw_(replyToken, [
     { type: 'text', text: fallbackText, quickReply: buildQuickReplyBar_() },
@@ -491,12 +553,10 @@ function buildQuickReplyBar_() {
       { type: 'action', action: { type: 'message', label: '📅 本月日曆', text: '日曆' } },
       { type: 'action', action: { type: 'message', label: '📝 只看作業', text: '作業' } },
       { type: 'action', action: { type: 'message', label: '⚡ 只看考試', text: '考試' } },
-      { type: 'action', action: { type: 'message', label: '🔄 同步更新', text: '同步' } },
+      { type: 'action', action: { type: 'message', label: '➕ 新增待辦', text: '新增' } },
     ],
   };
 }
-
-// ==================== 4 頁橫向輪播 Carousel ====================
 
 function buildDashboardCarousel_(tasks, firstTab) {
   const order = ['all', 'homework', 'exam', 'calendar'];
@@ -526,7 +586,7 @@ function buildChecklistBubble_(tasks, filter) {
   const displayItems = pendingList.concat(doneList).slice(0, 6);
 
   const headerMap = {
-    all: { title: '📋 全部待辦（往左滑看分類👉）', bg: '#1E3A8A' },
+    all: { title: '📋 全部待辦（點標題開 COOL 👉）', bg: '#1E3A8A' },
     homework: { title: '📝 作業／報告清單', bg: '#2563EB' },
     exam: { title: '⚡ 考試／小考清單', bg: '#D97706' },
   };
@@ -565,6 +625,7 @@ function buildChecklistBubble_(tasks, filter) {
             flex: 4,
             action: {
               type: 'uri',
+              label: '開啟 COOL',
               uri: buildExternalUrl_(item.url),
             },
             contents: [
@@ -756,7 +817,7 @@ function buildCalendarBubble_(tasks, targetDate) {
   } else {
     rows.push({
       type: 'text',
-      text: '本月尚無含明確日期的任務，可點下方按鈕新增或貼入 COOL_ICS_URL。',
+      text: '本月目前沒有尚未繳交的死線任務！',
       size: 'xs',
       color: '#6B7280',
       wrap: true,
@@ -825,8 +886,6 @@ function buildCalendarBubble_(tasks, targetDate) {
   };
 }
 
-// ==================== 標題瘦身、分類、日期與安全儲存 ====================
-
 function buildExternalUrl_(rawUrl) {
   const base = rawUrl && String(rawUrl).startsWith('http') ? String(rawUrl) : 'https://cool.ntu.edu.tw';
   if (base.includes('openExternalBrowser=1')) return base;
@@ -835,7 +894,6 @@ function buildExternalUrl_(rawUrl) {
 
 function shortenTitle_(raw) {
   let s = (raw || '未命名事項').replace(/\s+/g, ' ').trim();
-  // 去除常見重複前綴，讓手機版一目了然
   s = s.replace(/^(作業截止日期已更改|作業已建立|作業已更改|近期\s*NTU COOL\s*通知)\s*[：:\-]\s*/i, '');
   if (s.length > 36) s = s.slice(0, 35) + '…';
   return s || '未命名事項';
@@ -843,15 +901,12 @@ function shortenTitle_(raw) {
 
 function classifyCategory_(subject, body) {
   const subj = (subject || '').toLowerCase();
-  // 1. 排除「成績公布 / 閱卷 / 彙整通知」等非待辦事項
   if (/(已發佈的提交項目|最終分數|分數已更改|成績|閱卷|近期\s*ntu\s*cool\s*通知|graded|grade\s*posted)/.test(subj)) {
     return 'notice';
   }
-  // 2. 「考試」只嚴格比對標題，避免內文提到「不用小考／參訪」被誤判
   if (/(quiz|exam|midterm|小考|期中考|期末考|隨堂考|測驗|考試)/.test(subj)) {
     return 'exam';
   }
-  // 3. 「作業／表單／填寫」比對標題與前 120 字內文
   const s = (subj + ' ' + (body || '').slice(0, 120)).toLowerCase();
   if (/(assignment|homework|hw\d*|lab|report|作業|報告|繳交|表單|填寫|分組)/.test(s)) {
     return 'homework';
@@ -903,9 +958,10 @@ function parseManualTaskInput_(text) {
 }
 
 function syncIcsIntoTasks_(tasks) {
-  if (!CONFIG.COOL_ICS_URL || !CONFIG.COOL_ICS_URL.startsWith('http')) return 0;
+  const icsUrl = getSecret_('COOL_ICS_URL');
+  if (!icsUrl || !icsUrl.startsWith('http')) return 0;
   let added = 0;
-  const icsEvents = fetchUpcomingFromIcs_(CONFIG.COOL_ICS_URL);
+  const icsEvents = fetchUpcomingFromIcs_(icsUrl);
   for (const ev of icsEvents) {
     const uid = `ics_${ev.uid}`;
     if (!tasks.some((t) => t.id === uid)) added++;
@@ -916,6 +972,7 @@ function syncIcsIntoTasks_(tasks) {
       dueMs: ev.dueMs,
       dueDisplay: ev.dueDisplay,
       done: false,
+      url: 'https://cool.ntu.edu.tw',
     });
   }
   return added;
@@ -936,7 +993,8 @@ function extractCleanBody_(msg) {
 
 function summarizeWithGemini_(subject, body) {
   const fallback = () => `📌 ${(body || subject).slice(0, 90)}${body.length > 90 ? '...' : ''}`;
-  if (!CONFIG.GEMINI_API_KEY || CONFIG.GEMINI_API_KEY.includes('請填入')) return fallback();
+  const geminiKey = getSecret_('GEMINI_API_KEY');
+  if (!geminiKey) return fallback();
 
   const prompt =
     '你是台大 NTU COOL 課程助理。請將以下課程通知信濃縮為「不超過 60 個繁體中文字」的重點。\n' +
@@ -946,7 +1004,7 @@ function summarizeWithGemini_(subject, body) {
 
   const url =
     'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=' +
-    encodeURIComponent(CONFIG.GEMINI_API_KEY);
+    encodeURIComponent(geminiKey);
   try {
     const res = UrlFetchApp.fetch(url, {
       method: 'post',
@@ -1030,11 +1088,17 @@ function pushMergedLineAlert_(alerts) {
 }
 
 function pushLineMessages_(messages) {
+  const token = getSecret_('LINE_CHANNEL_ACCESS_TOKEN');
+  const userId = getSecret_('LINE_USER_ID');
+  if (!token || !userId) {
+    Logger.log('尚未設定 LINE Token 或 User ID。');
+    return false;
+  }
   const res = UrlFetchApp.fetch('https://api.line.me/v2/bot/message/push', {
     method: 'post',
     contentType: 'application/json',
-    headers: { Authorization: `Bearer ${CONFIG.LINE_CHANNEL_ACCESS_TOKEN}` },
-    payload: JSON.stringify({ to: CONFIG.LINE_USER_ID, messages: messages }),
+    headers: { Authorization: `Bearer ${token}` },
+    payload: JSON.stringify({ to: userId, messages: messages }),
     muteHttpExceptions: true,
   });
   if (res.getResponseCode() !== 200) Logger.log('LINE Push 失敗：' + res.getContentText());
@@ -1042,10 +1106,15 @@ function pushLineMessages_(messages) {
 }
 
 function replyRaw_(replyToken, messages) {
+  const token = getSecret_('LINE_CHANNEL_ACCESS_TOKEN');
+  if (!token) {
+    Logger.log('尚未設定 LINE_CHANNEL_ACCESS_TOKEN，無法 Reply。');
+    return false;
+  }
   const res = UrlFetchApp.fetch('https://api.line.me/v2/bot/message/reply', {
     method: 'post',
     contentType: 'application/json',
-    headers: { Authorization: `Bearer ${CONFIG.LINE_CHANNEL_ACCESS_TOKEN}` },
+    headers: { Authorization: `Bearer ${token}` },
     payload: JSON.stringify({ replyToken: replyToken, messages: messages }),
     muteHttpExceptions: true,
   });
@@ -1071,6 +1140,7 @@ function upsertTask_(tasks, newTask) {
   if (existing) {
     existing.title = newTask.title;
     existing.category = newTask.category;
+    if (newTask.url) existing.url = newTask.url;
     if (newTask.dueMs) {
       existing.dueMs = newTask.dueMs;
       existing.dueDisplay = newTask.dueDisplay;
@@ -1093,9 +1163,6 @@ function loadTasks_() {
   try { return JSON.parse(raw); } catch (e) { return []; }
 }
 
-/**
- * 安全存檔：嚴格控管 UTF-8 位元組數 < 7500 bytes，永遠不觸發 GAS 9KB 上限異常
- */
 function saveTasks_(tasks) {
   let list = sortTasks_(tasks).slice(0, MAX_STORED_TASKS);
   let json = JSON.stringify(list);
