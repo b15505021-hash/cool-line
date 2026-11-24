@@ -11,14 +11,14 @@ import config
 logger = logging.getLogger(__name__)
 
 
-def refresh_cool_cookie(timeout_ms: int = 30000) -> str:
+def refresh_cool_cookie(timeout_ms: int = 60000) -> str:
     """啟動無頭 Chromium 登入 NTU COOL，取得最新 _normandy_session 並同步更新 .env 與記憶體。
 
     Returns:
         最新取得的 _normandy_session 字串。
 
     Raises:
-        RuntimeError: 若未設定帳號密碼、登入逾時、遇到驗證碼或無法取得 Cookie 時拋出。
+        RuntimeError: 若未設定帳號密碼、登入逾時、帳密錯誤或無法取得 Cookie 時拋出。
     """
     student_id = config.NTU_STUDENT_ID
     password = config.NTU_PASSWORD
@@ -46,12 +46,28 @@ def refresh_cool_cookie(timeout_ms: int = 30000) -> str:
         page.set_default_timeout(timeout_ms)
 
         try:
-            page.goto(f"{config.COOL_BASE_URL}/login", wait_until="networkidle")
+            # 改用 domcontentloaded（避免等待背景分析腳本 networkidle 造成逾時），並於連線延遲時自動重試一次
+            for attempt in range(2):
+                try:
+                    page.goto(
+                        f"{config.COOL_BASE_URL}/login",
+                        wait_until="domcontentloaded",
+                        timeout=timeout_ms,
+                    )
+                    break
+                except PlaywrightTimeoutError:
+                    if attempt == 1:
+                        raise
+                    logger.warning("前往 NTU COOL 登入頁逾時，正在進行第 2 次重試...")
 
             # 若停在 COOL 登入入口頁，點擊「以計中帳號登入」前往台大 ADFS SSO
             sso_trigger = page.locator(
                 "button:has-text('以計中帳號登入'), a[href*='saml'], a[href*='login/saml'], button:has-text('NTU'), a:has-text('臺大')"
             )
+            try:
+                sso_trigger.first.wait_for(state="visible", timeout=8000)
+            except PlaywrightTimeoutError:
+                pass
             if sso_trigger.count() > 0 and page.locator("input[type='password']").count() == 0:
                 sso_trigger.first.click()
                 page.wait_for_load_state("domcontentloaded")
@@ -82,8 +98,8 @@ def refresh_cool_cookie(timeout_ms: int = 30000) -> str:
                 timeout=timeout_ms,
             )
 
-            # 確保 Canvas Session Cookie 已寫入
-            page.wait_for_load_state("networkidle", timeout=timeout_ms)
+            # 等待 DOM 就緒即可讀取 Canvas Session Cookie（無須等 networkidle）
+            page.wait_for_load_state("domcontentloaded", timeout=timeout_ms)
             cookies = context.cookies(config.COOL_BASE_URL)
             session_cookie = next(
                 (c["value"] for c in cookies if c.get("name") == "_normandy_session"),
@@ -99,7 +115,7 @@ def refresh_cool_cookie(timeout_ms: int = 30000) -> str:
 
         except PlaywrightTimeoutError as exc:
             raise RuntimeError(
-                f"自動登入台大 SSO 逾時（可能遇到網路延遲、帳密錯誤或需要雙重驗證/圖形驗證碼）：{exc}"
+                f"連線或登入台大 SSO 逾時（可能為 GitHub 雲端機房連回台大主機暫時較慢，或帳密有誤）：{exc}"
             ) from exc
         except Exception as exc:
             raise RuntimeError(f"自動登入流程發生錯誤：{exc}") from exc
