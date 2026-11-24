@@ -368,6 +368,32 @@ function handleTextMessage_(event) {
     return;
   }
 
+  if (lower === 'demo' || lower === '模擬') {
+    const sampleSubject = '【重要公告】本週五期中考考場異動與作業順延';
+    const sampleBody =
+      '各位同學好：原訂本週五 13:20 於綜 102 舉行的期中考，因冷氣維修全面改至「博雅教學館 101 室」，' +
+      '請提早 15 分鐘入場，可攜帶雙面 A4 大抄與無程式計算機。另外 HW3 期限順延至下週一 23:59，逾期扣 20%。';
+    const aiSummary = summarizeWithGemini_(sampleSubject, sampleBody);
+    const demoAlertText =
+      '❗❗❗❗❗❗❗❗❗❗\n' +
+      '🚨‼️【Demo Day 緊急考試模擬】‼️🚨\n' +
+      '❗❗ 偵測到 2 筆新動態（含突襲小考）❗❗\n' +
+      '❗❗❗❗❗❗❗❗❗❗\n\n' +
+      '1. ❗❗❗ [⚡ 考試] 工程數學第 12 週隨堂突襲小考 ❗❗❗\n' +
+      '   ⏰ 期限：10 分鐘後立即截止\n' +
+      '   🔗 https://cool.ntu.edu.tw?openExternalBrowser=1\n\n' +
+      `2. [📢 公告] ${sampleSubject}\n` +
+      `   🤖 AI 濃縮：${aiSummary}`;
+
+    const carousel = buildDashboardCarousel_(loadTasks_(), 'all');
+    carousel.quickReply = buildQuickReplyBar_();
+    replyRaw_(event.replyToken, [
+      { type: 'text', text: demoAlertText },
+      carousel,
+    ]);
+    return;
+  }
+
   if (['爬蟲', '立即爬', '立即更新', '爬cool', '爬 cool'].some((kw) => lower.includes(kw))) {
     const res = triggerGithubCoolCrawler_();
     replyRaw_(event.replyToken, [
@@ -473,14 +499,33 @@ function handleTextMessage_(event) {
     return;
   }
 
+  // 輸入任意科目關鍵字（如「微積分」、「Python」、「英文」）直接篩選該科待辦！
+  if (rawText.length >= 2 && rawText.length <= 15) {
+    const allTasks = loadTasks_();
+    const matched = allTasks.filter((t) => (t.title || '').toLowerCase().includes(lower));
+    if (matched.length > 0) {
+      const subjectBubble = buildChecklistBubble_(matched, 'all', `🎓 「${rawText}」單科待辦`);
+      replyRaw_(event.replyToken, [
+        {
+          type: 'flex',
+          altText: `「${rawText}」待辦清單（共 ${matched.length} 項）`,
+          contents: subjectBubble,
+          quickReply: buildQuickReplyBar_(),
+        },
+      ]);
+      return;
+    }
+  }
+
   replyRaw_(event.replyToken, [
     {
       type: 'text',
       text:
-        '👋 我是 COOL-LINE 課程助理！直接點下方快捷鍵即可：\n' +
+        '👋 我是 COOL-LINE 課程助理！直接點下方快捷鍵或輸入：\n' +
         '📋 「清單」→ 左右滑動看【全部／作業／考試／日曆】（點標題直達 COOL）\n' +
-        '📅 「日曆」→ 單看本月死線月曆\n' +
-        '➕ 「新增 11/28 14:00 微積分小考」→ 手動建待辦',
+        '🔍 直接輸入課名（如「微積分」、「英文」）→ 查單科未繳交\n' +
+        '🚀 「立即爬」→ 馬上叫雲端爬蟲登入 COOL 更新\n' +
+        '🎭 「demo」→ Demo Day 現場模擬緊急小考與 AI 濃縮',
       quickReply: buildQuickReplyBar_(),
     },
   ]);
@@ -625,7 +670,7 @@ function buildDashboardCarousel_(tasks, firstTab) {
   };
 }
 
-function buildChecklistBubble_(tasks, filter) {
+function buildChecklistBubble_(tasks, filter, customTitle) {
   const sorted = sortTasks_(tasks);
   const filtered =
     filter && filter !== 'all' ? sorted.filter((t) => t.category === filter) : sorted;
@@ -635,7 +680,7 @@ function buildChecklistBubble_(tasks, filter) {
   const displayItems = pendingList.concat(doneList).slice(0, 6);
 
   const headerMap = {
-    all: { title: '📋 全部待辦（點標題開 COOL 👉）', bg: '#1E3A8A' },
+    all: { title: customTitle || '📋 全部待辦（點標題開 COOL 👉）', bg: customTitle ? '#4338CA' : '#1E3A8A' },
     homework: { title: '📝 作業／報告清單', bg: '#2563EB' },
     exam: { title: '⚡ 考試／小考清單', bg: '#D97706' },
   };
@@ -660,6 +705,10 @@ function buildChecklistBubble_(tasks, filter) {
       const btnLabel = item.done ? '復原' : '完成';
       const btnStyle = item.done ? 'secondary' : 'primary';
       const btnColor = item.done ? '#E5E7EB' : '#10B981';
+      const cd = formatCountdownMeta_(item.dueMs);
+      const dueLine = cd.label
+        ? `${getCategoryBadge_(item.category)} ｜ ${cd.label} (${item.dueDisplay || ''})`
+        : `${getCategoryBadge_(item.category)} ｜ ⏰ ${item.dueDisplay || '詳見信件'}`;
 
       bodyContents.push({
         type: 'box',
@@ -690,9 +739,10 @@ function buildChecklistBubble_(tasks, filter) {
               },
               {
                 type: 'text',
-                text: `${getCategoryBadge_(item.category)} ｜ ⏰ ${item.dueDisplay || '詳見信件'}`,
+                text: dueLine,
                 size: 'xxs',
-                color: item.done ? '#9CA3AF' : '#DC2626',
+                weight: !item.done && cd.urgent ? 'bold' : 'regular',
+                color: item.done ? '#9CA3AF' : cd.color,
                 wrap: true,
                 margin: 'xs',
               },
@@ -948,9 +998,26 @@ function shortenTitle_(raw) {
   return s || '未命名事項';
 }
 
+function formatCountdownMeta_(dueMs) {
+  if (!dueMs) return { label: '', color: '#64748B', urgent: false };
+  const diffHours = (dueMs - Date.now()) / (3600 * 1000);
+  if (diffHours < 0) return { label: '⌛ 已過期', color: '#9CA3AF', urgent: false };
+  if (diffHours <= 24) {
+    const h = Math.max(1, Math.ceil(diffHours));
+    return { label: `🔥 剩 ${h} 小時`, color: '#DC2626', urgent: true };
+  }
+  const days = Math.ceil(diffHours / 24);
+  if (days <= 3) return { label: `⚠️ 剩 ${days} 天`, color: '#D97706', urgent: true };
+  return { label: `剩 ${days} 天`, color: '#475569', urgent: false };
+}
+
 function classifyCategory_(subject, body) {
   const subj = (subject || '').toLowerCase();
-  if (/(已發佈的提交項目|最終分數|分數已更改|成績|閱卷|近期\s*ntu\s*cool\s*通知|graded|grade\s*posted)/.test(subj)) {
+  // 成績出爐專屬分類（單獨推播通知，絕不塞進待辦清單）
+  if (/(已發佈的提交項目|最終分數|分數已更改|成績|graded|grade\s*posted)/.test(subj)) {
+    return 'grade';
+  }
+  if (/(閱卷|近期\s*ntu\s*cool\s*通知)/.test(subj)) {
     return 'notice';
   }
   if (/(quiz|exam|midterm|小考|期中考|期末考|隨堂考|測驗|考試)/.test(subj)) {
@@ -984,6 +1051,7 @@ function extractDueDateFromText_(text) {
 function getCategoryBadge_(category) {
   if (category === 'exam') return '⚡ 考試';
   if (category === 'homework') return '📝 作業';
+  if (category === 'grade') return '🏆 成績出爐';
   return '📢 公告';
 }
 
@@ -1113,6 +1181,7 @@ function parseIcsDate_(val) {
 
 function pushMergedLineAlert_(alerts) {
   const hasExam = alerts.some((item) => item.category === 'exam');
+  const allGrades = alerts.every((item) => item.category === 'grade');
   let header = `🚨 NTU COOL 偵測到 ${alerts.length} 筆新動態！\n${'─'.repeat(18)}`;
   if (hasExam) {
     header =
@@ -1120,6 +1189,8 @@ function pushMergedLineAlert_(alerts) {
       '🚨‼️【緊急考試通知】‼️🚨\n' +
       `❗❗ 偵測到 ${alerts.length} 筆新動態（含考試）❗❗\n` +
       '❗❗❗❗❗❗❗❗❗❗';
+  } else if (allGrades) {
+    header = `🏆 NTU COOL 成績出爐通知（共 ${alerts.length} 筆）！\n${'─'.repeat(18)}`;
   }
   const blocks = alerts.map((item, idx) => {
     const prefix = item.category === 'exam' ? '❗❗❗ ' : '';
@@ -1127,6 +1198,7 @@ function pushMergedLineAlert_(alerts) {
     const lines = [`${idx + 1}. ${prefix}[${item.type}] ${item.title}${suffix}`];
     if (item.dueText) lines.push(`   ⏰ 期限：${item.dueText}`);
     if (item.detail) lines.push(`   ${item.detail}`);
+    if (item.category === 'grade') lines.push('   🔗 https://cool.ntu.edu.tw?openExternalBrowser=1');
     return lines.join('\n');
   });
 

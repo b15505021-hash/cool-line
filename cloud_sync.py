@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import requests
@@ -38,8 +38,42 @@ def _format_taipei_display(dt: datetime) -> str:
     return taipei_dt.strftime("%m/%d (%a) %H:%M")
 
 
-def fetch_unsubmitted_tasks() -> list[dict[str, Any]]:
-    """透過 Canvas API 取得所有「尚未截止且尚未繳交」的作業與測驗。"""
+def fetch_recent_files(courses: list[dict[str, Any]], hours: int = 16) -> list[dict[str, Any]]:
+    """偵測過去 N 小時內教授默默上傳至 COOL /files 的新講義或檔案。"""
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+    recent_files: list[dict[str, Any]] = []
+
+    for course in courses:
+        cid = course["id"]
+        cname = course.get("name", f"課程 {cid}")
+        files = scraper._cool_get_json(
+            f"{config.COOL_API_BASE_URL}/courses/{cid}/files?sort=created_at&order=desc&per_page=5",
+            allow_disabled_tab=True,
+        )
+        if not isinstance(files, list):
+            continue
+        for f in files:
+            created_dt = _parse_iso(f.get("created_at") or f.get("updated_at"))
+            if created_dt is None or created_dt < cutoff:
+                continue
+            fname = f.get("display_name") or f.get("filename") or "未命名檔案"
+            file_url = f.get("url") or f"{config.COOL_BASE_URL}/courses/{cid}/files"
+            recent_files.append(
+                {
+                    "course_name": cname,
+                    "item_type": "file",
+                    "raw_title": fname,
+                    "title": fname,
+                    "due_at": None,
+                    "url": line_service.to_external_browser_url(file_url),
+                    "summary": "教授剛上傳的新課程檔案／講義（點下方連結直接開啟）",
+                }
+            )
+    return recent_files
+
+
+def fetch_unsubmitted_tasks() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """透過 Canvas API 取得 (尚未繳交作業測驗清單, 近期新上傳檔案清單)。"""
     try:
         courses = scraper.fetch_active_courses()
     except scraper.SessionExpiredError:
@@ -124,7 +158,8 @@ def fetch_unsubmitted_tasks() -> list[dict[str, Any]]:
                 )
 
     unsubmitted.sort(key=lambda x: x["dueMs"])
-    return unsubmitted
+    recent_files = fetch_recent_files(courses, hours=16)
+    return unsubmitted, recent_files
 
 
 def sync_to_gas_webhook(tasks: list[dict[str, Any]]) -> bool:
@@ -160,56 +195,66 @@ def sync_to_gas_webhook(tasks: list[dict[str, Any]]) -> bool:
 
 def main() -> int:
     try:
-        tasks = fetch_unsubmitted_tasks()
-        logger.info("共偵測到 %d 筆未過期且尚未繳交的作業／測驗。", len(tasks))
+        tasks, recent_files = fetch_unsubmitted_tasks()
+        logger.info("共偵測到 %d 筆未繳交作業／測驗、%d 筆新上傳檔案。", len(tasks), len(recent_files))
         for t in tasks[:10]:
             logger.info(" - [%s] %s (%s)", t["category"], t["title"], t["dueDisplay"])
 
         sync_to_gas_webhook(tasks)
 
-        # 檢查今日截止的未繳交項目，依時段發送「早安死線早報」或「睡前最後搶救提醒」
+        # 檢查今日截止的未繳交項目 + 近期新上傳檔案
         now_taipei = config.get_taipei_now()
         today_str = now_taipei.strftime("%m/%d")
         today_label = now_taipei.strftime("%m/%d (%a)")
         is_night = now_taipei.hour >= 21
 
         due_today = [t for t in tasks if t["dueDisplay"].startswith(today_str)]
-        if due_today and config.LINE_CHANNEL_ACCESS_TOKEN and config.LINE_USER_ID:
+        alerts: list[dict[str, Any]] = [
+            {
+                "course_name": t["course_name"],
+                "item_type": "quiz" if t["category"] == "exam" else "assignment",
+                "raw_title": t["raw_title"],
+                "title": t["title"],
+                "due_at": datetime.fromtimestamp(
+                    t["dueMs"] / 1000, tz=timezone.utc
+                ).isoformat(),
+                "url": t["url"],
+                "summary": "尚未繳交，點下方連結可直接用外部瀏覽器開啟該作業頁！",
+            }
+            for t in due_today
+        ]
+        alerts.extend(recent_files[:5])
+
+        if alerts and config.LINE_CHANNEL_ACCESS_TOKEN and config.LINE_USER_ID:
             has_exam = any(t["category"] == "exam" for t in due_today)
             if has_exam:
                 header = (
                     "❗❗❗❗❗❗❗❗❗❗\n"
                     f"🚨‼️【今日緊急死線提醒（{today_label}）】‼️🚨\n"
-                    f"❗❗ 尚有 {len(due_today)} 項今日截止且未完成（含考試）❗❗\n"
+                    f"❗❗ 尚有 {len(due_today)} 項今日截止（含考試）❗❗\n"
                     "❗❗❗❗❗❗❗❗❗❗"
                 )
-            elif is_night:
+            elif is_night and due_today:
                 header = (
                     f"🔥【睡前最後搶救提醒（{today_label}）】\n"
                     f"距離今日死線只剩最後一小時，尚有 {len(due_today)} 項作業未繳交！\n"
                     + ("─" * 18)
                 )
-            else:
+            elif due_today:
                 header = (
                     f"☀️【早安死線提醒（{today_label}）】\n"
-                    f"今日共有 {len(due_today)} 項作業尚未在 NTU COOL 繳交：\n"
+                    f"今日共有 {len(due_today)} 項未繳交作業"
+                    + (f" ＋ {len(recent_files)} 份新檔案" if recent_files else "")
+                    + "：\n"
+                    + ("─" * 18)
+                )
+            else:
+                header = (
+                    f"📁【NTU COOL 新上傳講義／檔案通知（{today_label}）】\n"
+                    f"偵測到 {len(recent_files)} 份最新上傳檔案：\n"
                     + ("─" * 18)
                 )
 
-            alerts = [
-                {
-                    "course_name": t["course_name"],
-                    "item_type": "quiz" if t["category"] == "exam" else "assignment",
-                    "raw_title": t["raw_title"],
-                    "title": t["title"],
-                    "due_at": datetime.fromtimestamp(
-                        t["dueMs"] / 1000, tz=timezone.utc
-                    ).isoformat(),
-                    "url": t["url"],
-                    "summary": "尚未繳交，點下方連結可直接用外部瀏覽器開啟該作業頁！",
-                }
-                for t in due_today
-            ]
             line_service.push_alert(alerts, custom_header=header)
         elif (
             os.getenv("TRIGGER_EVENT") == "workflow_dispatch"
@@ -218,7 +263,7 @@ def main() -> int:
         ):
             line_service.push_warning(
                 f"✅ NTU COOL 雲端爬蟲更新完成！\n"
-                f"目前共 {len(tasks)} 項未繳交作業／測驗（今日無截止項目）。\n"
+                f"目前共 {len(tasks)} 項未繳交作業／測驗（今日無截止項目、無新上傳檔案）。\n"
                 "點下方「📋 滑動總覽」即可查看最新清單！"
             )
 
