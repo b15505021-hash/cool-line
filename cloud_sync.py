@@ -202,13 +202,27 @@ def main() -> int:
 
         sync_to_gas_webhook(tasks)
 
-        # 檢查今日截止的未繳交項目 + 近期新上傳檔案
+        # 檢查今日截止、2 天後截止的未繳交項目 + 近期新上傳檔案
         now_taipei = config.get_taipei_now()
-        today_str = now_taipei.strftime("%m/%d")
+        today_date = now_taipei.date()
+        two_days_date = today_date + timedelta(days=2)
         today_label = now_taipei.strftime("%m/%d (%a)")
+        two_days_label = (now_taipei + timedelta(days=2)).strftime("%m/%d (%a)")
         is_night = now_taipei.hour >= 21
 
-        due_today = [t for t in tasks if t["dueDisplay"].startswith(today_str)]
+        def _task_taipei_date(task: dict[str, Any]):
+            return datetime.fromtimestamp(
+                task["dueMs"] / 1000, tz=timezone.utc
+            ).astimezone(config.TAIPEI_TZ).date()
+
+        due_today = [t for t in tasks if _task_taipei_date(t) == today_date]
+        # 截止前 2 天預告：僅在早上早報或手動觸發時通知（避免 23:00 睡前搶救時段重複洗版）
+        due_in_two_days = (
+            [t for t in tasks if _task_taipei_date(t) == two_days_date]
+            if (not is_night or os.getenv("TRIGGER_EVENT") == "workflow_dispatch")
+            else []
+        )
+
         alerts: list[dict[str, Any]] = [
             {
                 "course_name": t["course_name"],
@@ -219,19 +233,42 @@ def main() -> int:
                     t["dueMs"] / 1000, tz=timezone.utc
                 ).isoformat(),
                 "url": t["url"],
-                "summary": "尚未繳交，點下方連結可直接用外部瀏覽器開啟該作業頁！",
+                "summary": "🔥 今日截止且尚未繳交，點下方連結可直接用外部瀏覽器開啟該作業頁！",
             }
             for t in due_today
         ]
+        alerts.extend(
+            [
+                {
+                    "course_name": t["course_name"],
+                    "item_type": "quiz" if t["category"] == "exam" else "assignment",
+                    "raw_title": t["raw_title"],
+                    "title": f"【2天後截止】{t['title']}",
+                    "due_at": datetime.fromtimestamp(
+                        t["dueMs"] / 1000, tz=timezone.utc
+                    ).isoformat(),
+                    "url": t["url"],
+                    "summary": "⏳ 距離截止只剩 2 天！尚未在 NTU COOL 繳交，提醒您提早安排時間完成。",
+                }
+                for t in due_in_two_days
+            ]
+        )
         alerts.extend(recent_files[:5])
 
         if alerts and config.LINE_CHANNEL_ACCESS_TOKEN and config.LINE_USER_ID:
-            has_exam = any(t["category"] == "exam" for t in due_today)
-            if has_exam:
+            has_exam_today = any(t["category"] == "exam" for t in due_today)
+            extra_parts: list[str] = []
+            if due_in_two_days:
+                extra_parts.append(f"{len(due_in_two_days)} 項 2 天後（{two_days_label}）截止")
+            if recent_files:
+                extra_parts.append(f"{len(recent_files)} 份新檔案")
+            extra_suffix = f" ＋ {'、'.join(extra_parts)}" if extra_parts else ""
+
+            if has_exam_today:
                 header = (
                     "❗❗❗❗❗❗❗❗❗❗\n"
                     f"🚨‼️【今日緊急死線提醒（{today_label}）】‼️🚨\n"
-                    f"❗❗ 尚有 {len(due_today)} 項今日截止（含考試）❗❗\n"
+                    f"❗❗ 尚有 {len(due_today)} 項今日截止（含考試）{extra_suffix} ❗❗\n"
                     "❗❗❗❗❗❗❗❗❗❗"
                 )
             elif is_night and due_today:
@@ -243,9 +280,14 @@ def main() -> int:
             elif due_today:
                 header = (
                     f"☀️【早安死線提醒（{today_label}）】\n"
-                    f"今日共有 {len(due_today)} 項未繳交作業"
-                    + (f" ＋ {len(recent_files)} 份新檔案" if recent_files else "")
-                    + "：\n"
+                    f"今日共有 {len(due_today)} 項未繳交作業{extra_suffix}：\n"
+                    + ("─" * 18)
+                )
+            elif due_in_two_days:
+                file_suffix = f"（另含 {len(recent_files)} 份新檔案）" if recent_files else ""
+                header = (
+                    f"⏰【作業／測驗截止前 2 天預告（{two_days_label} 截止）】\n"
+                    f"尚有 {len(due_in_two_days)} 項未繳交項目將於兩天後截止{file_suffix}，提醒您提早準備：\n"
                     + ("─" * 18)
                 )
             else:
@@ -263,7 +305,7 @@ def main() -> int:
         ):
             line_service.push_warning(
                 f"✅ NTU COOL 雲端爬蟲更新完成！\n"
-                f"目前共 {len(tasks)} 項未繳交作業／測驗（今日無截止項目、無新上傳檔案）。\n"
+                f"目前共 {len(tasks)} 項未繳交作業／測驗（今日與 2 天後皆無截止項目、無新上傳檔案）。\n"
                 "點下方「📋 滑動總覽」即可查看最新清單！"
             )
 

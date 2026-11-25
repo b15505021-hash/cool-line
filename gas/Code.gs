@@ -172,33 +172,58 @@ function sendDailyMorningBriefing() {
   const now = new Date();
   const todayStr = Utilities.formatDate(now, 'Asia/Taipei', 'yyyy-MM-dd');
   const todayLabel = Utilities.formatDate(now, 'Asia/Taipei', 'MM/dd (EEE)');
+  const twoDaysLater = new Date(now.getTime() + 2 * 86400 * 1000);
+  const twoDaysStr = Utilities.formatDate(twoDaysLater, 'Asia/Taipei', 'yyyy-MM-dd');
+  const twoDaysLabel = Utilities.formatDate(twoDaysLater, 'Asia/Taipei', 'MM/dd (EEE)');
 
-  const dueToday = sortTasks_(tasks).filter((t) => {
+  const sortedTasks = sortTasks_(tasks);
+  const dueToday = sortedTasks.filter((t) => {
     if (t.done || !t.dueMs) return false;
     return Utilities.formatDate(new Date(t.dueMs), 'Asia/Taipei', 'yyyy-MM-dd') === todayStr;
   });
+  const dueInTwoDays = sortedTasks.filter((t) => {
+    if (t.done || !t.dueMs) return false;
+    return Utilities.formatDate(new Date(t.dueMs), 'Asia/Taipei', 'yyyy-MM-dd') === twoDaysStr;
+  });
 
-  // 若今日有未繳交任務，且過去 2 小時內 GitHub Actions 剛跑過（已發過精準早報），則不重複推播第二次！
+  // 若今日或 2 天後有未繳交任務，且過去 2 小時內 GitHub Actions 剛跑過（已發過精準早報），則不重複推播第二次！
   const lastSyncMs = Number(PropertiesService.getScriptProperties().getProperty(PROP_LAST_CANVAS_SYNC) || 0);
-  if (dueToday.length > 0 && lastSyncMs > 0 && Date.now() - lastSyncMs < 2 * 3600 * 1000) {
-    Logger.log('GitHub Actions 剛發送過今日死線提醒，略過重複早報。');
+  if (
+    (dueToday.length > 0 || dueInTwoDays.length > 0) &&
+    lastSyncMs > 0 &&
+    Date.now() - lastSyncMs < 2 * 3600 * 1000
+  ) {
+    Logger.log('GitHub Actions 剛發送過今日／兩天後死線提醒，略過重複早報。');
     return;
   }
 
   let msgText = '';
-  if (dueToday.length === 0) {
-    msgText = `☀️ 早安！今天（${todayLabel}）沒有截止的未繳交作業或考試，祝你今天順心！`;
-  } else {
+  const sections = [];
+  if (dueToday.length > 0) {
     const hasExam = dueToday.some((t) => t.category === 'exam');
     const header = hasExam
       ? `❗❗❗ 早安緊急提醒：今天（${todayLabel}）有 ${dueToday.length} 項截止（含考試）❗❗❗`
       : `☀️ 早安！今天（${todayLabel}）有 ${dueToday.length} 項截止任務：`;
-
     const lines = dueToday.map((t, idx) => {
       const timeOnly = Utilities.formatDate(new Date(t.dueMs), 'Asia/Taipei', 'HH:mm');
       return `${idx + 1}. [${getCategoryBadge_(t.category)}] ${t.title}\n   ⏰ 今日 ${timeOnly} 截止`;
     });
-    msgText = `${header}\n${'─'.repeat(18)}\n${lines.join('\n\n')}`;
+    sections.push(`${header}\n${'─'.repeat(18)}\n${lines.join('\n\n')}`);
+  }
+
+  if (dueInTwoDays.length > 0) {
+    const twoHeader = `⏰【截止前 2 天預告】${twoDaysLabel} 有 ${dueInTwoDays.length} 項任務截止：`;
+    const twoLines = dueInTwoDays.map((t, idx) => {
+      const timeOnly = Utilities.formatDate(new Date(t.dueMs), 'Asia/Taipei', 'HH:mm');
+      return `${idx + 1}. [${getCategoryBadge_(t.category)}] ${t.title}\n   ⏳ ${twoDaysLabel} ${timeOnly} 截止`;
+    });
+    sections.push(`${twoHeader}\n${'─'.repeat(18)}\n${twoLines.join('\n\n')}`);
+  }
+
+  if (sections.length === 0) {
+    msgText = `☀️ 早安！今天（${todayLabel}）與兩天後皆沒有截止的未繳交作業或考試，祝你今天順心！`;
+  } else {
+    msgText = sections.join('\n\n');
   }
 
   pushLineMessages_([{ type: 'text', text: msgText, quickReply: buildQuickReplyBar_() }]);
