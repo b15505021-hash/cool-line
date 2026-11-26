@@ -299,15 +299,40 @@ def main() -> int:
 
             line_service.push_alert(alerts, custom_header=header)
         elif (
-            os.getenv("TRIGGER_EVENT") == "workflow_dispatch"
+            (not is_night or os.getenv("TRIGGER_EVENT") == "workflow_dispatch")
             and config.LINE_CHANNEL_ACCESS_TOKEN
             and config.LINE_USER_ID
         ):
-            line_service.push_warning(
-                f"✅ NTU COOL 雲端爬蟲更新完成！\n"
-                f"目前共 {len(tasks)} 項未繳交作業／測驗（今日與 2 天後皆無截止項目、無新上傳檔案）。\n"
-                "點下方「📋 滑動總覽」即可查看最新清單！"
-            )
+            is_manual = os.getenv("TRIGGER_EVENT") == "workflow_dispatch"
+            if is_manual:
+                title_line = f"✅【NTU COOL 雲端爬蟲更新完成（{today_label}）】"
+            else:
+                title_line = f"☀️【早安報平安（{today_label}）】"
+
+            upcoming_lines: list[str] = []
+            for idx, t in enumerate(tasks[:3], start=1):
+                due_d = _task_taipei_date(t)
+                days_left = (due_d - today_date).days
+                days_hint = f"剩 {days_left} 天" if days_left > 0 else "今日截止"
+                badge = "⚡ 考試" if t["category"] == "exam" else "📝 作業"
+                upcoming_lines.append(
+                    f"{idx}. [{badge}] {t['title']}\n   ⏳ {t['dueDisplay']}（{days_hint}）"
+                )
+
+            if upcoming_lines:
+                body = (
+                    f"{title_line}\n"
+                    "今天與兩天後皆沒有截止項目，機器人持續為您監控中！\n\n"
+                    f"📌 最近 {len(upcoming_lines)} 筆即將截止的未繳交項目：\n"
+                    + "\n".join(upcoming_lines)
+                    + f"\n\n點下方「📋 滑動總覽」可查看全部 {len(tasks)} 項清單！"
+                )
+            else:
+                body = (
+                    f"{title_line}\n"
+                    "目前 NTU COOL 上完全沒有尚未繳交的作業或考試，祝您今天順心！"
+                )
+            line_service.push_warning(body)
 
         return 0
     except Exception as exc:

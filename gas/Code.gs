@@ -186,14 +186,10 @@ function sendDailyMorningBriefing() {
     return Utilities.formatDate(new Date(t.dueMs), 'Asia/Taipei', 'yyyy-MM-dd') === twoDaysStr;
   });
 
-  // 若今日或 2 天後有未繳交任務，且過去 2 小時內 GitHub Actions 剛跑過（已發過精準早報），則不重複推播第二次！
+  // 若過去 2 小時內 GitHub Actions 剛跑過（已發過早安報平安或死線提醒），則不重複推播第二次！
   const lastSyncMs = Number(PropertiesService.getScriptProperties().getProperty(PROP_LAST_CANVAS_SYNC) || 0);
-  if (
-    (dueToday.length > 0 || dueInTwoDays.length > 0) &&
-    lastSyncMs > 0 &&
-    Date.now() - lastSyncMs < 2 * 3600 * 1000
-  ) {
-    Logger.log('GitHub Actions 剛發送過今日／兩天後死線提醒，略過重複早報。');
+  if (lastSyncMs > 0 && Date.now() - lastSyncMs < 2 * 3600 * 1000) {
+    Logger.log('GitHub Actions 剛發送過今日早報／報平安，略過重複早報。');
     return;
   }
 
