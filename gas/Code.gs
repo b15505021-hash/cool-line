@@ -287,9 +287,49 @@ function testLinePush() {
   Logger.log(ok ? '測試推播成功！' : '測試推播失敗，請檢查執行紀錄。');
 }
 
+const PROP_TRIGGERS_CHECKED = 'COOL_TRIGGERS_CHECKED_MS';
+
+/**
+ * 自動建立必要排程觸發條件（免手動設定 GAS 鬧鐘！）
+ * 每 24 小時最多檢查一次，確保不重複建立也不拖慢 LINE 回覆速度。
+ */
+function ensureTriggersInstalled_() {
+  try {
+    const props = PropertiesService.getScriptProperties();
+    const lastCheck = Number(props.getProperty(PROP_TRIGGERS_CHECKED) || 0);
+    if (lastCheck > 0 && Date.now() - lastCheck < 24 * 3600 * 1000) return;
+
+    const existing = ScriptApp.getProjectTriggers().map((t) => t.getHandlerFunction());
+    if (!existing.includes('checkCoolUpdates')) {
+      ScriptApp.newTrigger('checkCoolUpdates').timeBased().everyMinutes(5).create();
+    }
+    if (!existing.includes('sendDailyMorningBriefing')) {
+      ScriptApp.newTrigger('sendDailyMorningBriefing').timeBased().everyDays(1).atHour(8).create();
+    }
+    props.setProperty(PROP_TRIGGERS_CHECKED, String(Date.now()));
+  } catch (err) {
+    Logger.log('自動建立排程觸發條件略過：' + err);
+  }
+}
+
+/**
+ * 瀏覽器直接開啟 /exec 網址時的友善健康檢查頁（並順手自動安裝排程鬧鐘）
+ */
+function doGet() {
+  ensureTriggersInstalled_();
+  return HtmlService.createHtmlOutput(
+    '<!DOCTYPE html><html><meta charset="utf-8"><body style="font-family:sans-serif;text-align:center;padding:48px;background:#f0fdf4;color:#14532d;">' +
+      '<h1>✅ COOL-LINE 雲端部署成功！</h1>' +
+      '<p>您的 Google Apps Script 權限（所有人可存取）設定正確，且 5 分鐘巡檢排程已自動啟用。</p>' +
+      '<p>請把這串網址貼回《COOL-LINE 一鍵安裝精靈》與 LINE Developers 的 Webhook URL！</p>' +
+      '</body></html>'
+  );
+}
+
 function doPost(e) {
   let lastReplyToken = '';
   try {
+    ensureTriggersInstalled_();
     if (!e || !e.postData || !e.postData.contents) {
       return ContentService.createTextOutput('OK');
     }
