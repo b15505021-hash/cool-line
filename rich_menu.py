@@ -171,7 +171,7 @@ def ensure_rich_menu(force: bool = False) -> str | None:
             "size": {"width": 1200, "height": 810},
             "selected": True,
             "name": RICH_MENU_NAME,
-            "chatBarText": "📂 開啟／收合 COOL 快捷選單",
+            "chatBarText": "📂 COOL 快捷選單",
             "areas": [
                 {
                     "bounds": {"x": 0, "y": 0, "width": 400, "height": 405},
