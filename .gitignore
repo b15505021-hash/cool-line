@@ -3,6 +3,9 @@
 gas_oauth_client.json
 gas_token.json
 .gas_deploy_config.json
+.install_state.json
+Code.personal.gs
+dist/
 
 # SQLite 本地資料庫
 *.db

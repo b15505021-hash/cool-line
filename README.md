@@ -42,6 +42,14 @@ COOL-LINE/
 
 ---
 
+## 🤖 用 Antigravity 自動安裝（推薦・最輕鬆！）
+
+如果你自己電腦也有裝 **Google Antigravity**，直接下載 **[`COOL-LINE_Antigravity安裝包.zip`](./COOL-LINE_Antigravity安裝包.zip)** 解壓縮後交給你的 Antigravity：
+- 只要開啟該資料夾對它說 **「幫我安裝 COOL-LINE」**（中途斷掉說「繼續安裝 COOL-LINE」即可無縫接續）。
+- 內建 `.agents/skills/cool-line-installer/SKILL.md` 與 `installer.py`，會自動偵測已完成的步驟、問你個人設定、幫你開瀏覽器（登入畫面由你本人按）並完成 LINE Webhook、GAS 部署、GitHub Secrets 加密與首次測試！
+
+---
+
 ## ✨ 新手零門檻推薦：一鍵分享安裝精靈（免寫程式・不燒原作者額度）
 
 想把 COOL-LINE 分享給其他台大同學？直接將專案內的 **[`COOL-LINE_一鍵安裝精靈.html`](./COOL-LINE_一鍵安裝精靈.html)** 傳給對方雙擊開啟（支援 Windows / Mac 瀏覽器，完全無須安裝 Python）：

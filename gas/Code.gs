@@ -28,6 +28,7 @@ const PROP_PENDING_DATE_KEY = 'COOL_PENDING_PICKED_DATE';
 const PROP_LAST_CANVAS_SYNC = 'COOL_LAST_CANVAS_SYNC_MS';
 const PROP_LAST_MORNING_DATE = 'COOL_LAST_MORNING_PUSH_DATE';
 const PROP_LAST_WEEKLY_DATE = 'COOL_LAST_WEEKLY_PUSH_DATE';
+const COOL_LINE_VERSION = '2026.11.28';
 const MAX_STORED_IDS = 150;
 const MAX_STORED_TASKS = 30;
 const SAFE_PROP_BYTES = 7500;
@@ -343,6 +344,11 @@ function doPost(e) {
       return ContentService.createTextOutput('OK');
     }
     const payload = JSON.parse(e.postData.contents);
+    if (payload && payload.ping === 'cool-line') {
+      return ContentService.createTextOutput(
+        JSON.stringify({ status: 'PONG', version: COOL_LINE_VERSION })
+      ).setMimeType(ContentService.MimeType.JSON);
+    }
 
     // 接收來自 GitHub Actions / cloud_sync.py 的真實「未繳交清單」與金鑰同步
     if (payload.sync_source === 'canvas_api' && payload.sync_secret) {
