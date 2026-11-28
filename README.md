@@ -7,11 +7,10 @@
 ## ✨ 核心特色
 
 - **免開電腦、自動過濾已繳交作業（GitHub Actions）**：
-  - 每天早上 **07:55** 與晚上 **23:00**（死線前最後一小時）自動透過無頭瀏覽器登入台大 SSO，從 Canvas API 精準篩選出 **「尚未截止且尚未繳交（`unsubmitted`）」** 的作業與測驗，交完的作業自動從清單消失。
-- **即時公告濃縮與分級警報（Google Apps Script + Gemini 2.5 Flash）**：
-  - 每 5 分鐘掃描 Gmail 中的 NTU COOL 通知信，自動濃縮為 60 字內重點；偵測到考試關鍵字立即發送滿版 **`❗❗❗` 紅色驚嘆號緊急警報**。
-- **4 頁橫向輪播 LINE 儀表板（完全免費 Reply API）**：
-  - 輸入「清單」一次回傳 **【📋 全部 ｜ 📝 作業 ｜ ⚡ 考試 ｜ 📅 本月日曆】** 4 張並排卡片，左右滑動切換不洗版、不扣每月 200 則推播額度。
+  - 每天早上 **07:55**（含早安報平安＋2 天後預告）、每週日 **20:00**（未來 7 天戰況總覽）與每天晚上 **23:00**（死線前最後一小時）自動透過無頭瀏覽器登入台大 SSO，從 Canvas API 精準篩選出 **「尚未截止且尚未繳交（`unsubmitted`）」** 的作業與測驗，交完的作業自動從清單消失（自動排除問卷與參訪報名表誤判考試）。
+- **LINE 底部常駐 6 格圖文選單（Rich Menu）＋ 4 頁橫向輪播儀表板（完全免費 Reply API）**：
+  - 首次同步自動為機器人綁定底部 6 格常駐選單（`滑動總覽`、`本月日曆`、`立即爬 COOL`、`本週戰況`、`新增待辦`、`開啟 COOL`），免打字一按即用。
+  - 輸入「清單」一次回傳 **【📋 全部 ｜ 📝 作業 ｜ ⚡ 考試 ｜ 📅 本月日曆】** 4 張並排卡片，輸入「本週」查看未來 7 天總覽，左右滑動切換不洗版、不扣每月 200 則推播額度。
   - **點擊標題直達繳交頁**：自動附加 `?openExternalBrowser=1`，點擊任務標題直接以 Safari／Chrome 開啟該作業頁，避開 LINE 內建瀏覽器限制。
   - **互動式 Check List ＋ 原生選日期新增**：支援一鍵打勾「完成／復原」及呼叫手機原生滾輪日曆新增個人待辦。
 
@@ -25,10 +24,11 @@ COOL-LINE/
 ├── build_wizard.py            # 建置安裝精靈並執行零洩密自動檢查
 ├── vendor/                    # 本機離線純 JS Curve25519 SealedBox 加密套件
 ├── .github/workflows/
-│   └── daily_cool.yml   # GitHub Actions 排程（每日 07:55 與 23:00 自動登入同步）
+│   └── daily_cool.yml   # GitHub Actions 排程（每日 07:55、週日 20:00、每日 23:00，含快取加速）
 ├── gas/
 │   └── Code.gs          # Google Apps Script 程式碼（LINE Webhook 輪播日曆 + 5 分鐘 Gmail 巡檢）
-├── cloud_sync.py        # 雲端同步主程式（過濾已繳交作業、同步至 GAS、發送早晚死線提醒）
+├── cloud_sync.py        # 雲端同步主程式（過濾已繳交作業、同步至 GAS、發送早晚／週報死線提醒）
+├── rich_menu.py         # LINE 底部常駐 6 格圖文選單自動產生與綁定模組
 ├── auth_helper.py       # Playwright 自動走完台大 ADFS SSO 登入取得 _normandy_session
 ├── scraper.py           # Canvas REST API 與 Gmail IMAP 擷取模組
 ├── ai_summarizer.py     # Gemini 2.5 Flash 公告濃縮（含純文字降級機制）

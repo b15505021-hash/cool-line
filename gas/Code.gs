@@ -26,6 +26,8 @@ const PROP_NOTIFIED_KEY = 'COOL_NOTIFIED_IDS';
 const PROP_TASKS_KEY = 'COOL_TASKS_LIST';
 const PROP_PENDING_DATE_KEY = 'COOL_PENDING_PICKED_DATE';
 const PROP_LAST_CANVAS_SYNC = 'COOL_LAST_CANVAS_SYNC_MS';
+const PROP_LAST_MORNING_DATE = 'COOL_LAST_MORNING_PUSH_DATE';
+const PROP_LAST_WEEKLY_DATE = 'COOL_LAST_WEEKLY_PUSH_DATE';
 const MAX_STORED_IDS = 150;
 const MAX_STORED_TASKS = 30;
 const SAFE_PROP_BYTES = 7500;
@@ -186,8 +188,14 @@ function sendDailyMorningBriefing() {
     return Utilities.formatDate(new Date(t.dueMs), 'Asia/Taipei', 'yyyy-MM-dd') === twoDaysStr;
   });
 
+  const props = PropertiesService.getScriptProperties();
+  if (props.getProperty(PROP_LAST_MORNING_DATE) === todayStr) {
+    Logger.log('今日已發送過早報／早安報平安，略過重複發送。');
+    return;
+  }
+
   // 若過去 2 小時內 GitHub Actions 剛跑過（已發過早安報平安或死線提醒），則不重複推播第二次！
-  const lastSyncMs = Number(PropertiesService.getScriptProperties().getProperty(PROP_LAST_CANVAS_SYNC) || 0);
+  const lastSyncMs = Number(props.getProperty(PROP_LAST_CANVAS_SYNC) || 0);
   if (lastSyncMs > 0 && Date.now() - lastSyncMs < 2 * 3600 * 1000) {
     Logger.log('GitHub Actions 剛發送過今日早報／報平安，略過重複早報。');
     return;
@@ -222,6 +230,7 @@ function sendDailyMorningBriefing() {
     msgText = sections.join('\n\n');
   }
 
+  props.setProperty(PROP_LAST_MORNING_DATE, todayStr);
   pushLineMessages_([{ type: 'text', text: msgText, quickReply: buildQuickReplyBar_() }]);
 }
 
@@ -345,24 +354,36 @@ function doPost(e) {
         if (!currentUserId) props.setProperty('CFG_LINE_USER_ID', String(payload.sync_secret).trim());
         if (payload.line_token) props.setProperty('CFG_LINE_CHANNEL_ACCESS_TOKEN', String(payload.line_token).trim());
         if (payload.gemini_key) props.setProperty('CFG_GEMINI_API_KEY', String(payload.gemini_key).trim());
-        props.setProperty(PROP_LAST_CANVAS_SYNC, String(Date.now()));
+        if (payload.mark_morning_date) props.setProperty(PROP_LAST_MORNING_DATE, String(payload.mark_morning_date).trim());
+        if (payload.mark_weekly_date) props.setProperty(PROP_LAST_WEEKLY_DATE, String(payload.mark_weekly_date).trim());
 
-        const prevTasks = loadTasks_();
-        const doneIds = new Set(prevTasks.filter((t) => t.done).map((t) => t.id));
-        const manualTasks = prevTasks.filter((t) => t.id.startsWith('man_'));
+        if (Array.isArray(payload.tasks)) {
+          props.setProperty(PROP_LAST_CANVAS_SYNC, String(Date.now()));
+          const prevTasks = loadTasks_();
+          const doneIds = new Set(prevTasks.filter((t) => t.done).map((t) => t.id));
+          const manualTasks = prevTasks.filter((t) => t.id.startsWith('man_'));
 
-        const incoming = (Array.isArray(payload.tasks) ? payload.tasks : []).map((t) => ({
-          id: t.id,
-          title: t.title,
-          category: t.category,
-          dueMs: t.dueMs,
-          dueDisplay: t.dueDisplay,
-          done: Boolean(t.done || doneIds.has(t.id)),
-          url: t.url || 'https://cool.ntu.edu.tw',
-        }));
+          const incoming = payload.tasks.map((t) => ({
+            id: t.id,
+            title: t.title,
+            category: t.category,
+            dueMs: t.dueMs,
+            dueDisplay: t.dueDisplay,
+            done: Boolean(t.done || doneIds.has(t.id)),
+            url: t.url || 'https://cool.ntu.edu.tw',
+          }));
 
-        saveTasks_(incoming.concat(manualTasks));
-        return ContentService.createTextOutput('SYNC_OK');
+          saveTasks_(incoming.concat(manualTasks));
+        }
+
+        const stateResp = {
+          status: 'SYNC_OK',
+          last_morning_date: props.getProperty(PROP_LAST_MORNING_DATE) || '',
+          last_weekly_date: props.getProperty(PROP_LAST_WEEKLY_DATE) || '',
+        };
+        return ContentService.createTextOutput(JSON.stringify(stateResp)).setMimeType(
+          ContentService.MimeType.JSON
+        );
       }
       return ContentService.createTextOutput('FORBIDDEN');
     }
@@ -399,7 +420,7 @@ function handleTextMessage_(event) {
   const pendingIso = props.getProperty(PROP_PENDING_DATE_KEY);
   if (
     pendingIso &&
-    !['清單', '作業', '考試', '日曆', '月曆', '同步', '新增', '取消'].includes(lower)
+    !['清單', '作業', '考試', '日曆', '月曆', '同步', '新增', '取消', '本週', '本週戰況', '未來7天'].includes(lower)
   ) {
     props.deleteProperty(PROP_PENDING_DATE_KEY);
     const dt = new Date(pendingIso);
@@ -547,6 +568,36 @@ function handleTextMessage_(event) {
       'all',
       `✅ 已新增至【${getCategoryLabel_(parsed.category)}】：${shortenTitle_(parsed.title)}（⏰ ${parsed.dueDisplay}）`
     );
+    return;
+  }
+
+  if (['本週', '本周', '本週戰況', '未來7天', '未來七天'].some((kw) => lower === kw || lower.includes(kw))) {
+    const tasks = loadTasks_();
+    const now = new Date();
+    const startMs = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0).getTime();
+    const endMs = startMs + 8 * 86400 * 1000 - 1;
+    const weekTasks = sortTasks_(tasks).filter(
+      (t) => !t.done && t.dueMs && t.dueMs >= startMs && t.dueMs <= endMs
+    );
+    if (weekTasks.length === 0) {
+      replyRaw_(event.replyToken, [
+        {
+          type: 'text',
+          text: '📊【未來 7 天戰況總覽】\n太棒了！未來一週內沒有任何尚未繳交的作業或考試！',
+          quickReply: buildQuickReplyBar_(),
+        },
+      ]);
+      return;
+    }
+    const weekBubble = buildChecklistBubble_(weekTasks, 'all', '📊 未來 7 天戰況');
+    replyRaw_(event.replyToken, [
+      {
+        type: 'flex',
+        altText: `未來 7 天戰況（共 ${weekTasks.length} 項未繳交）`,
+        contents: weekBubble,
+        quickReply: buildQuickReplyBar_(),
+      },
+    ]);
     return;
   }
 
@@ -1081,7 +1132,11 @@ function classifyCategory_(subject, body) {
   if (/(閱卷|近期\s*ntu\s*cool\s*通知)/.test(subj)) {
     return 'notice';
   }
-  if (/(quiz|exam|midterm|小考|期中考|期末考|隨堂考|測驗|考試)/.test(subj)) {
+  // 排除用測驗/表單建立的參訪報名與問卷，避免誤觸紅色考試警報
+  if (/(參訪|報名|問卷|調查|心得|回饋|意見|簽到|點名|分組|survey|feedback|questionnaire|attendance|signup|sign-up)/.test(subj)) {
+    return 'homework';
+  }
+  if (/(quiz|exam|midterm|final|小考|期中考|期末考|隨堂考|測驗|考試)/.test(subj)) {
     return 'exam';
   }
   const s = (subj + ' ' + (body || '').slice(0, 120)).toLowerCase();

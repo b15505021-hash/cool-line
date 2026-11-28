@@ -31,6 +31,7 @@ REPO_FILE_WHITELIST: list[str] = [
     "scraper.py",
     "ai_summarizer.py",
     "line_service.py",
+    "rich_menu.py",
     "auth_helper.py",
     "cloud_sync.py",
     "app.py",
